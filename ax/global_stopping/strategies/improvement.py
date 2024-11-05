@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from ax.core.base_trial import BaseTrial, TrialStatus
+from ax.core.batch_trial import BatchTrial
 from ax.core.data import Data
 from ax.core.experiment import Experiment
 from ax.core.optimization_config import (
@@ -247,9 +248,17 @@ class ImprovementGlobalStoppingStrategy(BaseGlobalStoppingStrategy):
         is_feasible = []
         for trial in experiment.trials_by_status[TrialStatus.COMPLETED]:
             if trial.index <= trial_to_check:
-                tr = checked_cast(Trial, trial)
-                objectives.append(tr.objective_mean)
-                is_feasible.append(constraint_satisfaction(tr))
+                if isinstance(trial, Trial):
+                    tr = checked_cast(Trial, trial)
+                    obj_trial = [tr.objective_mean]
+                    feasible_trial = constraint_satisfaction(tr)
+                elif isinstance(trial, BatchTrial):
+                    tr = checked_cast(BatchTrial, trial)
+                    obj_trial = list(tr.fetch_data().df["mean"].values)
+                    feasible_trial = constraint_satisfaction(tr)
+
+                objectives.extend(obj_trial)
+                is_feasible.extend(feasible_trial)
 
         if checked_cast(
             OptimizationConfig, experiment.optimization_config
@@ -305,7 +314,11 @@ def constraint_satisfaction(trial: BaseTrial) -> bool:
         trial.experiment.optimization_config
     ).outcome_constraints
     if len(outcome_constraints) == 0:
-        return True
+        if isinstance(trial, BatchTrial):
+            return [True for _ in range(len(trial.arms))]
+        else:
+            return [True]
+        
 
     df = trial.lookup_data().df
     for constraint in outcome_constraints:
@@ -323,6 +336,8 @@ def constraint_satisfaction(trial: BaseTrial) -> bool:
         else:
             satisfied = mean >= bound
         if not satisfied:
+            # TODO: This can be adapted to batch trials easily, by returning a
+            # list of comparisons, and using extend instead of append
             return False
 
     return True
